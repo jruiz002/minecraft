@@ -556,14 +556,26 @@ pub struct HitInfo {
     pub uv: (f32, f32),
 }
 
-// Enhanced raytracing parameters
+// Enhanced raytracing parameters (upper bound). Actual depth is controlled by RenderOptions.max_depth
 const MAX_DEPTH: i32 = 6;
 const SAMPLES_PER_PIXEL: i32 = 1;
 const RUSSIAN_ROULETTE_DEPTH: i32 = 3;
 const MIN_CONTRIBUTION: f32 = 0.001;
 
-pub fn trace_ray(ray: &Ray, scene: &Scene, depth: i32, time: f32, rotation_y: f32) -> Vec3 {
+// Runtime render options to trade quality for performance
+#[derive(Clone, Copy)]
+pub enum ShadowMode { None, SunOnly, Full }
+
+#[derive(Clone, Copy)]
+pub struct RenderOptions {
+    pub shadow_mode: ShadowMode,
+    pub max_depth: i32,
+}
+
+pub fn trace_ray(ray: &Ray, scene: &Scene, depth: i32, time: f32, rotation_y: f32, opts: &RenderOptions) -> Vec3 {
     // Russian roulette termination
+    // Hard stop by user options
+    if depth >= opts.max_depth { return Vec3::zero(); }
     if depth >= RUSSIAN_ROULETTE_DEPTH {
         let termination_prob = 0.9_f32.powf((depth - RUSSIAN_ROULETTE_DEPTH) as f32);
         if rand::random::<f32>() > termination_prob || depth >= MAX_DEPTH {
@@ -578,7 +590,7 @@ pub fn trace_ray(ray: &Ray, scene: &Scene, depth: i32, time: f32, rotation_y: f3
     
     // Find closest intersection
     if let Some(hit) = intersect_scene(&rotated_ray, scene, time) {
-        let color = shade_hit(ray, &hit, scene, depth, time, rotation_y);
+        let color = shade_hit(ray, &hit, scene, depth, time, rotation_y, opts);
         
         // Apply fog if present
         if let Some(fog) = &scene.fog {
@@ -616,7 +628,7 @@ fn intersect_scene(ray: &Ray, scene: &Scene, time: f32) -> Option<HitInfo> {
     }
 }
 
-fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32) -> Vec3 {
+fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32, opts: &RenderOptions) -> Vec3 {
     let mut color = Vec3::zero();
     
     // Sample material texture
@@ -630,32 +642,40 @@ fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rot
     // Ambient lighting
     color = color + scene.ambient_light * albedo;
     
-    // Direct lighting from all light sources
+    // Direct lighting from all light sources (respect shadow mode)
     for light in &scene.lights {
-        color = color + calculate_direct_lighting(ray, hit, light, albedo, scene, time);
+        match (&opts.shadow_mode, &light.light_type) {
+            (ShadowMode::None, _) => {},
+            (ShadowMode::SunOnly, LightType::Point) => {},
+            _ => { color = color + calculate_direct_lighting(ray, hit, light, albedo, scene, time, opts); }
+        }
     }
     
     // Reflection
-    if hit.material.is_reflective() && depth < MAX_DEPTH {
-        let reflect_contribution = calculate_reflection(ray, hit, scene, depth, time, rotation_y);
+    if hit.material.is_reflective() && depth < opts.max_depth {
+        let reflect_contribution = calculate_reflection(ray, hit, scene, depth, time, rotation_y, opts);
         color = color + reflect_contribution * hit.material.reflectivity;
     }
     
     // Refraction/Transmission
-    if hit.material.is_transparent() && depth < MAX_DEPTH {
-        let refract_contribution = calculate_refraction(ray, hit, scene, depth, time, rotation_y);
+    if hit.material.is_transparent() && depth < opts.max_depth {
+        let refract_contribution = calculate_refraction(ray, hit, scene, depth, time, rotation_y, opts);
         color = color.lerp(refract_contribution, hit.material.transparency);
     }
     
     color
 }
 
-fn calculate_direct_lighting(ray: &Ray, hit: &HitInfo, light: &Light, albedo: Vec3, scene: &Scene, time: f32) -> Vec3 {
+fn calculate_direct_lighting(ray: &Ray, hit: &HitInfo, light: &Light, albedo: Vec3, scene: &Scene, time: f32, _opts: &RenderOptions) -> Vec3 {
     let light_dir = light.get_light_direction(hit.point);
     let light_distance = match light.light_type {
         LightType::Directional(_) => f32::INFINITY,
         _ => (light.position - hit.point).length(),
     };
+    
+    // Early out if not facing light
+    let n_dot_l = hit.normal.dot(light_dir).max(0.0);
+    if n_dot_l <= 0.0 { return Vec3::zero(); }
     
     // Shadow test
     let shadow_ray = Ray::new(hit.point + hit.normal * 0.001, light_dir);
@@ -671,13 +691,10 @@ fn calculate_direct_lighting(ray: &Ray, hit: &HitInfo, light: &Light, albedo: Ve
     let attenuation = light.get_attenuation(hit.point);
     let spot_factor = light.get_spot_factor(hit.point);
     let light_intensity = light.intensity * attenuation * spot_factor;
-    
-    if light_intensity <= 0.0 {
-        return Vec3::zero();
-    }
+    // Skip lights that contribute too little
+    if light_intensity <= 0.01 { return Vec3::zero(); }
     
     // Lambertian diffuse
-    let n_dot_l = hit.normal.dot(light_dir).max(0.0);
     let diffuse = albedo * light.color * light_intensity * n_dot_l / std::f32::consts::PI;
     
     // Blinn-Phong specular
@@ -692,13 +709,13 @@ fn calculate_direct_lighting(ray: &Ray, hit: &HitInfo, light: &Light, albedo: Ve
     diffuse + specular
 }
 
-fn calculate_reflection(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32) -> Vec3 {
+fn calculate_reflection(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32, opts: &RenderOptions) -> Vec3 {
     let reflect_dir = ray.direction.reflect(hit.normal);
     let reflect_ray = Ray::new(hit.point + hit.normal * 0.001, reflect_dir);
-    trace_ray(&reflect_ray, scene, depth + 1, time, rotation_y)
+    trace_ray(&reflect_ray, scene, depth + 1, time, rotation_y, opts)
 }
 
-fn calculate_refraction(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32) -> Vec3 {
+fn calculate_refraction(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rotation_y: f32, opts: &RenderOptions) -> Vec3 {
     let entering = ray.direction.dot(hit.normal) < 0.0;
     let eta = if entering {
         1.0 / hit.material.refraction_index
@@ -710,10 +727,10 @@ fn calculate_refraction(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, tim
     
     if let Some(refract_dir) = (-ray.direction).refract(normal, eta) {
         let refract_ray = Ray::new(hit.point - normal * 0.001, refract_dir);
-        trace_ray(&refract_ray, scene, depth + 1, time, rotation_y)
+        trace_ray(&refract_ray, scene, depth + 1, time, rotation_y, opts)
     } else {
         // Total internal reflection
-        calculate_reflection(ray, hit, scene, depth, time, rotation_y)
+        calculate_reflection(ray, hit, scene, depth, time, rotation_y, opts)
     }
 }
 

@@ -19,6 +19,13 @@ use obj_loader::*;
 const WIDTH: usize = 800;
 const HEIGHT: usize = 600;
 
+#[derive(Clone, Copy)]
+struct RenderState {
+    scale_factor: usize, // 1 = full res, 2 = half res, etc.
+    shadow_mode: raytracer::ShadowMode,
+    max_depth: i32,
+}
+
 fn main() {
     let mut window_options = WindowOptions::default();
     window_options.scale = minifb::Scale::X2;
@@ -49,6 +56,7 @@ fn main() {
     // Build BVH once after scene creation for faster ray intersections
     build_scene_bvh(&mut scene);
     let mut frame_buffer = vec![0u32; WIDTH * HEIGHT];
+    let mut lowres_buffer: Vec<u32> = Vec::new();
     let mut time = 0.0f32;
     let mut fps_counter = 0;
     let mut fps_timer = Instant::now();
@@ -66,6 +74,8 @@ fn main() {
     println!("ESC: Exit");
     println!("====================================");
 
+    let mut render_state = RenderState { scale_factor: 2, shadow_mode: raytracer::ShadowMode::SunOnly, max_depth: 3 };
+
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let start_time = Instant::now();
         
@@ -79,7 +89,20 @@ fn main() {
         update_minecraft_scene(&mut scene, time);
         
         let render_start = Instant::now();
-        render_parallel(&scene, &camera, &mut frame_buffer, time, rotation_y);
+        // Keyboard toggles for performance/quality
+        if window.is_key_pressed(Key::Key1, minifb::KeyRepeat::No) { render_state.scale_factor = 1; }
+        if window.is_key_pressed(Key::Key2, minifb::KeyRepeat::No) { render_state.scale_factor = 2; }
+        if window.is_key_pressed(Key::Key3, minifb::KeyRepeat::No) { render_state.scale_factor = 3; }
+        if window.is_key_pressed(Key::Key4, minifb::KeyRepeat::No) { render_state.scale_factor = 4; }
+        if window.is_key_pressed(Key::F, minifb::KeyRepeat::No) { render_state.max_depth = (render_state.max_depth + 1).clamp(1, 6); println!("Max depth: {}", render_state.max_depth); }
+        if window.is_key_pressed(Key::G, minifb::KeyRepeat::No) { render_state.max_depth = (render_state.max_depth - 1).clamp(1, 6); println!("Max depth: {}", render_state.max_depth); }
+        if window.is_key_pressed(Key::Y, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::None; println!("Shadows: None"); }
+        if window.is_key_pressed(Key::U, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::SunOnly; println!("Shadows: SunOnly"); }
+        if window.is_key_pressed(Key::I, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::Full; println!("Shadows: Full"); }
+        
+        let opts = raytracer::RenderOptions { shadow_mode: render_state.shadow_mode, max_depth: render_state.max_depth };
+        
+        render_parallel_scaled(&scene, &camera, &mut frame_buffer, &mut lowres_buffer, time, rotation_y, render_state.scale_factor, opts);
         let render_time = render_start.elapsed();
         
         window.update_with_buffer(&frame_buffer, WIDTH, HEIGHT).unwrap();
@@ -213,16 +236,44 @@ fn handle_input(
     }
 }
 
-fn render_parallel(scene: &Scene, camera: &Camera, buffer: &mut [u32], time: f32, rotation_y: f32) {
+fn render_parallel(scene: &Scene, camera: &Camera, buffer: &mut [u32], time: f32, rotation_y: f32, opts: raytracer::RenderOptions) {
     let frame = camera.build_frame(WIDTH, HEIGHT);
     let chunks: Vec<_> = buffer.chunks_mut(WIDTH).collect();
     chunks.into_par_iter().enumerate().for_each(|(y, row)| {
         for (x, pixel) in row.iter_mut().enumerate() {
             let ray = frame.get_ray(x as f32, y as f32);
-            let color = trace_ray(&ray, scene, 0, time, rotation_y);
+            let color = trace_ray(&ray, scene, 0, time, rotation_y, &opts);
             *pixel = color_to_u32(color);
         }
     });
+}
+
+fn render_parallel_scaled(scene: &Scene, camera: &Camera, full_buffer: &mut [u32], lowres_buffer: &mut Vec<u32>, time: f32, rotation_y: f32, scale_factor: usize, opts: raytracer::RenderOptions) {
+    if scale_factor <= 1 {
+        render_parallel(scene, camera, full_buffer, time, rotation_y, opts);
+        return;
+    }
+    let lw = WIDTH / scale_factor;
+    let lh = HEIGHT / scale_factor;
+    if lowres_buffer.len() != lw * lh { lowres_buffer.resize(lw * lh, 0); }
+    let frame = camera.build_frame(lw, lh);
+    let chunks: Vec<_> = lowres_buffer.chunks_mut(lw).collect();
+    chunks.into_par_iter().enumerate().for_each(|(y, row)| {
+        for (x, pixel) in row.iter_mut().enumerate() {
+            let ray = frame.get_ray(x as f32, y as f32);
+            let color = trace_ray(&ray, scene, 0, time, rotation_y, &opts);
+            *pixel = color_to_u32(color);
+        }
+    });
+    // Upscale nearest-neighbor
+    for y in 0..HEIGHT {
+        let src_y = y / scale_factor;
+        let dest_row = &mut full_buffer[y * WIDTH..(y + 1) * WIDTH];
+        for x in 0..WIDTH {
+            let src_x = x / scale_factor;
+            dest_row[x] = lowres_buffer[src_y * lw + src_x];
+        }
+    }
 }
 
 fn create_minecraft_scene() -> Scene {
@@ -660,11 +711,9 @@ fn update_minecraft_scene(scene: &mut Scene, time: f32) {
     // Update sun
     if let Some(main_light) = scene.lights.get_mut(0) {
         let sun_angle = time * 0.05;
-        main_light.position = Vec3::new(
-            sun_angle.cos() * 50.0,
-            sun_angle.sin() * 30.0 + 20.0,
-            30.0
-        );
+        // Update directional light to follow the sun path
+        let sun_dir = Vec3::new(0.3, sun_angle.sin(), sun_angle.cos()).normalize();
+        main_light.light_type = LightType::Directional(sun_dir);
         
         if day_progress > 0.3 {
             // Day
