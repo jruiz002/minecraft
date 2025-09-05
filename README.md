@@ -1,139 +1,95 @@
-# Raytracing Diorama en Rust
+# Minecraft Raytracing Diorama (Rust)
 
-## Descripción del Proyecto
+## Descripción
 
-Este proyecto implementa un diorama completo usando raytracing en Rust puro, sin librerías externas de renderizado. El diorama presenta un castillo medieval con elementos fantásticos, incluyendo efectos avanzados de iluminación y materiales.
+Diorama interactivo estilo Minecraft renderizado por CPU en Rust (ray tracing puro) usando `minifb` para la ventana y `rayon` para paralelismo. La escena incluye terreno, casa, torre, estanque, portal, fogata, árbol procedural y mobiliario (banco) cargado desde OBJ; además de ciclo de día/noche con sol, materiales emisivos y texturas animadas.
 
-## Características Implementadas
+## Características (alineadas a la rúbrica)
 
-### ✅ Funcionalidades Principales (170+ puntos)
-
-- **[30 pts] Complejidad de la Escena**: Castillo medieval con torres, puentes, agua, cristales
-- **[20 pts] Atractivo Visual**: Materiales realistas, iluminación dinámica, texturas animadas
-- **[20 pts] Rendimiento**: Optimizado con multithreading (Rayon) para mantener FPS altos
-- **[15 pts] Ciclo Día/Noche**: Sol dinámico con cambios de color e intensidad
-- **[10 pts] Texturas Animadas**: Agua con ondas procedurales animadas
-- **[15 pts] Multithreading**: Renderizado paralelo usando Rayon
-- **[10 pts] Rotación de Cámara**: Controles completos de cámara con rotación de escena
-
-### ✅ Materiales (25+ puntos)
-- **[25 pts] 5 Materiales Diferentes**:
-  1. **Césped**: Textura verde con poca reflectividad
-  2. **Piedra**: Material rugoso para el castillo con especularidad media
-  3. **Madera**: Para puentes con baja especularidad
-  4. **Agua**: Material transparente con refracción (índice 1.33)
-  5. **Cristal**: Material altamente transparente con refracción (índice 1.5)
-
-### ✅ Efectos Avanzados (65+ puntos)
-- **[10 pts] Refracción**: Implementada en agua y cristal
-- **[5 pts] Reflexión**: En superficies metálicas y agua
-- **[30 pts] Modelo 3D OBJ**: Cargador de modelos OBJ con tetera de ejemplo
-- **[10 pts] Skybox**: Sistema de skybox con gradientes dinámicos
-- **[20 pts] Materiales Emisivos**: Antorchas que emiten luz y rayos
+- Complejidad de escena (30): terreno en capas, casa con ventanas, torre circular, estanque, portal Nether, fogata, árbol procedural, banco OBJ y antorchas.
+- Atractivo visual (20): skybox día/noche con sol y estrellas, materiales variados, portal animado, chispas en fogata, diamante giratorio, agua que responde a la hora del día.
+- FPS (20): BVH de aceleración, escalado dinámico 1–4, Ultra Mode (checkerboard + temporal reuse), control de sombras y profundidad, LTO en release.
+- Day/Night + sol (15): ciclo con sol direccional sincronizado con skybox; velocidad ajustable.
+- Texturas animadas (10): agua, fuego y portal procedurales.
+- Threads (15): render paralelo por filas con `rayon`.
+- Rotación/zoom (10): rotación del diorama y zoom con trackpad/mouse; cámara WASD/QE.
+- Materiales (5×5): césped, piedra, madera, vidrio, agua, diamante, obsidiana, glowstone, portal, fogata (cada uno con textura/procedural y albedo/specular/transparencia/reflectividad propios).
+- Refracción (10): agua (1.33), vidrio (1.5), diamante (2.4).
+- Efecto portal (20): material emisivo animado tipo Nether.
+- Reflexión (5): obsidiana, vidrio y diamante con reflectividad.
+- Modelo OBJ (30): `assets/tree.obj` y `assets/bench.obj` (autogenerados si faltan).
+- Skybox con texturas (10): gradiente día/noche con sol y estrellas.
+- Emisivos con luz (20): glowstone, fogata y antorchas generan luces puntuales.
 
 ## Controles
 
-- **WASD**: Mover cámara (adelante/atrás/izquierda/derecha)
-- **QE**: Subir/bajar cámara
-- **R**: Rotar escena
-- **ESC**: Salir
+- Movimiento: `W/A/S/D` (frente/izq/atrás/der), `Q/E` (bajar/subir)
+- Mirar: arrastrar con mouse (click izquierdo)
+- Rotar diorama: mantener `R`
+- Zoom: scroll de mouse/trackpad (siempre activo)
+- Ciclo día/noche: `T` alterna AUTO; con AUTO OFF usar `J/K` para scrub y `H` para saltar medio ciclo
+- Velocidad día/noche: `N/M` disminuye/aumenta
+- Rendimiento: `1–4` escala de resolución; `Y/U/I` sombras None/SunOnly/Full; `F/G` profundidad +/-
+- Ultra Mode: `Z` (checkerboard + temporal reuse)
+- Salir: `ESC`
 
-## Instalación y Ejecución
+## Instalación y ejecución
 
-### Prerrequisitos
-- Rust 1.70 o superior
-- Cargo
+Requisitos: Rust estable (1.70+), Cargo.
 
-### Compilación
 ```bash
-# Clonar el repositorio
-git clone [tu-repo-url]
-cd raytracing_diorama
-
-# Compilar en modo release para mejor rendimiento
-cargo build --release
-
-# Ejecutar
 cargo run --release
 ```
 
-### Assets Opcionales
-Coloca texturas en la carpeta `assets/` para mejorar la calidad visual:
-- `grass.png` - Textura de césped
-- `stone.png` - Textura de piedra
-- `wood.png` - Textura de madera
+Sugerencias de rendimiento en laptops:
+- Usa escala 3–4, sombras `Y`/`U`, profundidad 2–3 y Ultra Mode `Z` activado.
 
-Si no están disponibles, el programa usará colores sólidos.
+## Arquitectura
 
-## Arquitectura del Código
+- `main.rs`: loop principal, entrada, control de calidad/escala y composición de frame (incluye Ultra Mode y checkerboard).
+- `raytracer.rs`: cámara, luces, materiales, skybox, fog, BVH, intersecciones y sombreado (reflexión/refracción).
+- `primitives.rs`: primitivas (Esfera, Plano, Cubo, Triángulo, Cilindro, Toroide) y `SpinningCube` animado para el diamante.
+- `materials.rs`: materiales PBR-lite con builder (albedo, specular, transparencia, reflectividad, IOR, roughness, emissive).
+- `texture.rs`: texturas procedurales y animadas (agua, fuego, portal, bloques estilo Minecraft) con calidades (High/Medium/Low).
+- `obj_loader.rs`: cargador simple OBJ (triangulación por fan); autogenera `tree.obj` y `bench.obj` si faltan.
 
-### Módulos Principales
+## Cómo funciona (resumen técnico)
 
-- **`main.rs`**: Loop principal, manejo de entrada y renderizado
-- **`math.rs`**: Estructuras matemáticas (Vec3, Ray) y operaciones
-- **`raytracer.rs`**: Motor de raytracing, cámara y escena
-- **`materials.rs`**: Sistema de materiales con propiedades físicas
-- **`primitives.rs`**: Primitivas geométricas (Esfera, Cubo, Plano, Triángulo)
-- **`texture.rs`**: Sistema de texturas procedurales y animadas
-- **`obj_loader.rs`**: Cargador de modelos 3D en formato OBJ
+- Rayos primarios por píxel (o checkerboard en Ultra Mode), intersección acelerada por BVH; sombreado directo (Lambert + Blinn-Phong), sombras por rayos de oclusión, reflexión y refracción con Fresnel simplificado.
+- Ciclo día/noche: sol direccional y skybox sincronizados; emisivos (glowstone/antorchas/fogata) aportan luz puntual.
+- Texturas animadas: funciones trig/noise/FBM; calidad adaptativa por distancia y profundidad de rebote.
 
-### Características Técnicas
+## Assets
 
-- **Multithreading**: Renderizado paralelo por filas usando Rayon
-- **Optimizaciones**: Cálculos matemáticos optimizados para raytracing
-- **Flexibilidad**: Sistema modular que permite agregar nuevos materiales y primitivas
-- **Animaciones**: Sistema temporal para efectos dinámicos
+- `assets/tree.obj` y `assets/bench.obj` se crean automáticamente si no existen (no necesitas descargar nada).
+- El proyecto usa texturas procedurales; no requiere imágenes externas.
 
-## Video Demo
+## Tabla de cumplimiento (estimado)
 
-[Enlace al video demo mostrando todas las características]
-
-## Detalles de Implementación
-
-### Sistema de Raytracing
-- Implementación clásica de raytracing con reflexiones y refracciones
-- Soporte para múltiples rebotes de luz
-- Cálculos de Fresnel para refracción realista
-- Sistema de sombras con rayos de oclusión
-
-### Materiales Físicamente Basados
-- Propiedades albedo, especular, transparencia, reflectividad
-- Índices de refracción correctos para diferentes materiales
-- Materiales emisivos con contribución de luz
-- Sistema de texturas con UV mapping
-
-### Efectos Especiales
-- **Portal Effects**: [Si implementado] Efectos especiales tipo portal
-- **Ciclo Día/Noche**: Transiciones suaves de iluminación
-- **Texturas Procedurales**: Generación matemática de patrones
-- **Animaciones**: Ondas de agua, movimiento de luz
-
-## Puntuación Objetivo
-
-| Característica | Puntos | Estado |
-|---|---|---|
-| Complejidad | 30 | ✅ |
-| Atractivo Visual | 20 | ✅ |
-| FPS | 20 | ✅ |
-| Ciclo Día/Noche | 15 | ✅ |
-| Texturas Animadas | 10 | ✅ |
-| Threads | 15 | ✅ |
-| Rotación/Cámara | 10 | ✅ |
-| 5 Materiales | 25 | ✅ |
+| Criterio | Puntos | Estado |
+|---|---:|:--:|
+| Complejidad de escena | 30 | ✅ |
+| Atractivo visual | 20 | ✅ |
+| FPS (optimización) | 20 | ✅ |
+| Día/Noche con sol | 15 | ✅ |
+| Texturas animadas | 10 | ✅ |
+| Threads (Rayon) | 15 | ✅ |
+| Rotación y zoom | 10 | ✅ |
+| 5 materiales distintos | 25 | ✅ |
 | Refracción | 10 | ✅ |
 | Reflexión | 5 | ✅ |
-| Modelo OBJ | 30 | ✅ |
-| Skybox | 10 | ✅ |
-| Materiales Emisivos | 20 | ✅ |
-| **Total Estimado** | **220** | **✅** |
+| Modelo 3D OBJ | 30 | ✅ |
+| Skybox con texturas | 10 | ✅ |
+| Emisivos con luz | 20 | ✅ |
 
 ## Autor
 
-[Tu Nombre]  
-[Tu Carné]  
-Universidad del Valle de Guatemala  
-Gráficas por Computadora
+Nombre: José Gerardo Ruiz García
+
+Carné: 23719
+
+Curso: Gráficas por Computadora – UVG
 
 ---
 
-*Proyecto desarrollado completamente en Rust sin librerías externas de renderizado, siguiendo todos los requerimientos del curso.*
+Proyecto desarrollado completamente en Rust, con énfasis en claridad, modularidad y rendimiento en CPU.
