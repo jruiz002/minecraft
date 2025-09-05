@@ -72,8 +72,9 @@ fn main() {
     println!("WASD/Arrow Keys: Move camera");
     println!("QE/PageUp/PageDown: Move up/down");
     println!("R: Rotate scene");
-    println!("T: Toggle manual day/night control (hold J/K to scrub, H to toggle)");
+    println!("T: Toggle AUTO day/night (hold J/K to scrub when OFF, H to toggle)");
     println!("1-4: Resolution scale, Y/U/I: Shadows None/SunOnly/Full, F/G: Max depth +/-");
+    println!("N/M: Day-Night speed -/+ (más rápido o más lento)");
     println!("Z: Ultra mode (checkerboard + temporal reuse)");
     println!("Mouse: Look around (drag)");
     println!("Scroll: Zoom in/out");
@@ -82,6 +83,7 @@ fn main() {
 
     // Faster defaults for smoother movement (adjust at runtime with keys above)
     let mut render_state = RenderState { scale_factor: 3, shadow_mode: raytracer::ShadowMode::None, max_depth: 2, ultra_mode: true, checker_phase: false };
+    let mut day_speed: f32 = 0.15;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let start_time = Instant::now();
@@ -90,7 +92,7 @@ fn main() {
         input_state.move_speed = 5.0 * delta_time;
         handle_input(&window, &mut camera, &mut rotation_y, &mut input_state, &mut manual_time_control);
         
-        if !manual_time_control {
+        if manual_time_control {
             time += 0.016;
         } else {
             // Manual time scrubbing
@@ -98,12 +100,12 @@ fn main() {
             if window.is_key_down(Key::K) { time += 0.05; }
             if window.is_key_pressed(Key::H, minifb::KeyRepeat::No) {
                 // Jump half cycle to toggle day/night
-                let half_cycle = std::f32::consts::PI / 0.05;
+                let half_cycle = std::f32::consts::PI / day_speed;
                 time += half_cycle;
                 println!("Toggled day/night");
             }
         }
-        update_minecraft_scene(&mut scene, time);
+        update_minecraft_scene(&mut scene, time, day_speed);
         
         let render_start = Instant::now();
         // Keyboard toggles for performance/quality
@@ -117,6 +119,8 @@ fn main() {
         if window.is_key_pressed(Key::U, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::SunOnly; println!("Shadows: SunOnly"); }
         if window.is_key_pressed(Key::I, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::Full; println!("Shadows: Full"); }
         if window.is_key_pressed(Key::Z, minifb::KeyRepeat::No) { render_state.ultra_mode = !render_state.ultra_mode; println!("Ultra mode: {}", if render_state.ultra_mode { "ON" } else { "OFF" }); }
+        if window.is_key_pressed(Key::N, minifb::KeyRepeat::No) { day_speed = (day_speed - 0.05).max(0.02); println!("Day speed: {:.2}", day_speed); }
+        if window.is_key_pressed(Key::M, minifb::KeyRepeat::No) { day_speed = (day_speed + 0.05).min(1.0); println!("Day speed: {:.2}", day_speed); }
         
         let opts = raytracer::RenderOptions { shadow_mode: render_state.shadow_mode, max_depth: render_state.max_depth, far_simplify_distance: 20.0 };
         
@@ -229,6 +233,14 @@ fn handle_input(
         println!("Manual time control: {}", if *manual_time { "ON" } else { "OFF" });
     }
     
+    // Trackpad/Mouse wheel zoom: handle globally so it works on trackpads
+    if let Some((_, scroll_y)) = window.get_scroll_wheel() {
+        if scroll_y.abs() > 0.0 {
+            let zoom_factor = scroll_y as f32 * input_state.zoom_speed.max(0.05);
+            camera.position = camera.position + camera.get_forward() * zoom_factor;
+        }
+    }
+    
     // Mouse controls
     if let Some((x, y)) = window.get_mouse_pos(minifb::MouseMode::Clamp) {
         if let Some((last_x, last_y)) = input_state.last_mouse_pos {
@@ -262,12 +274,6 @@ fn handle_input(
             if window.get_mouse_down(minifb::MouseButton::Right) {
                 *rotation_y += dx * input_state.rotation_speed;
             }
-        }
-        
-        // Mouse wheel zoom
-        if let Some((_, scroll_y)) = window.get_scroll_wheel() {
-            let zoom_factor = scroll_y as f32 * input_state.zoom_speed;
-            camera.position = camera.position + camera.get_forward() * zoom_factor;
         }
         
         input_state.last_mouse_pos = Some((x, y));
@@ -811,13 +817,13 @@ fn create_minecraft_skybox() -> Skybox {
     )
 }
 
-fn update_minecraft_scene(scene: &mut Scene, time: f32) {
+fn update_minecraft_scene(scene: &mut Scene, time: f32, speed: f32) {
     // Day/night cycle
-    let day_progress = (time * 0.05).sin() * 0.5 + 0.5; // Slower cycle
+    let day_progress = (time * speed).sin() * 0.5 + 0.5; // Slower cycle adjustable
     
     // Update sun
     if let Some(main_light) = scene.lights.get_mut(0) {
-        let sun_angle = time * 0.05;
+        let sun_angle = time * speed;
         // Update directional light to follow the sun path
         let sun_dir = Vec3::new(0.3, sun_angle.sin(), sun_angle.cos()).normalize();
         main_light.light_type = LightType::Directional(sun_dir);
@@ -835,7 +841,7 @@ fn update_minecraft_scene(scene: &mut Scene, time: f32) {
     
     // Update skybox
     if let Some(skybox) = &mut scene.skybox {
-        skybox.update_time_of_day(day_progress);
+        skybox.update_time_of_day_with_speed(time, speed);
     }
 }
 

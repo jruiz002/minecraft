@@ -501,10 +501,12 @@ impl Skybox {
         }
     }
     
-    pub fn update_time_of_day(&mut self, time_factor: f32) {
-        self.time_of_day = time_factor;
+    pub fn update_time_of_day_with_speed(&mut self, time: f32, speed: f32) {
+        // time maps to [0..1] cycle using speed
+        let phase = (time * speed).sin() * 0.5 + 0.5;
+        self.time_of_day = phase;
         // Update sun direction based on time
-        let sun_angle = time_factor * std::f32::consts::PI - std::f32::consts::PI * 0.5;
+        let sun_angle = time * speed;
         self.sun_direction = Vec3::new(0.3, sun_angle.sin(), sun_angle.cos()).normalize();
     }
     
