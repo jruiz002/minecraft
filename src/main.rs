@@ -573,6 +573,21 @@ fn create_house(scene: &mut Scene, materials: &MinecraftMaterials) {
             )));
         }
     }
+    // Torches (emissive blocks + point lights) at corners
+    let torch_positions = [(-2.5, 1.5, -2.5), (2.5, 1.5, -2.5), (-2.5, 1.5, 2.5), (2.5, 1.5, 2.5)];
+    for (tx, ty, tz) in torch_positions {
+        scene.objects.push(Box::new(Cube::new(
+            Vec3::new(tx as f32, ty as f32, tz as f32),
+            0.3,
+            materials.campfire.clone(),
+        )));
+        scene.lights.push(Light {
+            position: Vec3::new(tx as f32, ty as f32 + 0.2, tz as f32),
+            color: Vec3::new(1.0, 0.6, 0.2),
+            intensity: 1.8,
+            light_type: LightType::Point,
+        });
+    }
 }
 
 fn create_tower(scene: &mut Scene, materials: &MinecraftMaterials) {
@@ -601,11 +616,12 @@ fn create_tower(scene: &mut Scene, materials: &MinecraftMaterials) {
         materials.glowstone.clone(),
     )));
     
-    // Diamond block as decoration
-    scene.objects.push(Box::new(Cube::new(
+    // Diamond block as decoration (spinning)
+    scene.objects.push(Box::new(SpinningCube::new(
         Vec3::new(tower_x, 6.0, tower_z),
         1.0,
         materials.diamond.clone(),
+        0.8,
     )));
 }
 
@@ -697,6 +713,17 @@ fn create_campfire(scene: &mut Scene, materials: &MinecraftMaterials) {
             materials.stone.clone(),
         )));
     }
+    // Fire sparks: small emissive triangles around the campfire
+    let center = Vec3::new(0.0, 0.8, 6.0);
+    for i in 0..20 {
+        let a = (i as f32) * 0.314;
+        let r = 0.2 + (i as f32 % 3.0) * 0.03;
+        let p0 = center + Vec3::new(r * a.cos(), (i as f32 % 5.0) * 0.05, r * a.sin());
+        let p1 = p0 + Vec3::new(0.03, 0.06, 0.0);
+        let p2 = p0 + Vec3::new(-0.03, 0.06, 0.0);
+        let tri = Triangle::new(p0, p1, p2, materials.campfire.clone());
+        scene.objects.push(Box::new(tri));
+    }
 }
 
 fn load_3d_models(scene: &mut Scene, materials: &MinecraftMaterials) {
@@ -710,6 +737,13 @@ fn load_3d_models(scene: &mut Scene, materials: &MinecraftMaterials) {
     } else {
         // Create a procedural tree
         create_procedural_tree(scene, materials);
+    }
+    // Ensure bench asset exists and load it
+    ensure_bench_asset();
+    if let Ok(model) = ObjModel::load_from_file("assets/bench.obj", materials.wood.clone()) {
+        for triangle in model.triangles {
+            scene.objects.push(triangle);
+        }
     }
 }
 
@@ -740,6 +774,31 @@ f 6 7 8\n\
 f 6 8 9\n\
 f 6 9 10\n\
 f 6 10 7\n";
+    if let Ok(mut f) = fs::File::create(path) {
+        let _ = f.write_all(obj.as_bytes());
+    }
+}
+
+fn ensure_bench_asset() {
+    use std::fs;
+    use std::io::Write;
+    let _ = fs::create_dir_all("assets");
+    let path = "assets/bench.obj";
+    if fs::metadata(path).is_ok() { return; }
+    // Simple bench made of few quads as two triangles each
+    let obj = "# simple bench\n\
+v -1 0 0\n\
+v 1 0 0\n\
+v 1 0.1 0\n\
+v -1 0.1 0\n\
+v -0.9 -0.5 0\n\
+v -0.8 0.0 0\n\
+v 0.9 -0.5 0\n\
+v 0.8 0.0 0\n\
+f 1 2 3\n\
+f 1 3 4\n\
+f 5 6 1\n\
+f 7 2 8\n";
     if let Ok(mut f) = fs::File::create(path) {
         let _ = f.write_all(obj.as_bytes());
     }
@@ -843,6 +902,11 @@ fn update_minecraft_scene(scene: &mut Scene, time: f32, speed: f32) {
     if let Some(skybox) = &mut scene.skybox {
         skybox.update_time_of_day_with_speed(time, speed);
     }
+
+    // Modulate water brightness with day_progress: find water materials and tweak albedo subtly
+    // (simple pass – in a larger engine we'd separate instances; here we scale ambient for effect)
+    let water_ambient = Vec3::new(0.05, 0.07, 0.1).lerp(Vec3::new(0.12, 0.18, 0.25), day_progress);
+    scene.ambient_light = Vec3::new(0.08, 0.08, 0.12) + water_ambient * 0.2;
 }
 
 fn color_to_u32(color: Vec3) -> u32 {

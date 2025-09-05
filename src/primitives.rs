@@ -276,6 +276,91 @@ impl Primitive for Cube {
     }
 }
 
+// Spinning cube that rotates around Y over time
+pub struct SpinningCube {
+    pub center: Vec3,
+    pub size: f32,
+    pub material: Material,
+    pub rotation_speed: f32,
+}
+
+impl SpinningCube {
+    pub fn new(center: Vec3, size: f32, material: Material, rotation_speed: f32) -> Self {
+        Self { center, size, material, rotation_speed }
+    }
+}
+
+impl Primitive for SpinningCube {
+    fn intersect(&self, ray: &Ray, time: f32) -> Option<HitInfo> {
+        // Compute time-based rotation only on Y axis
+        let angle = time * self.rotation_speed;
+        let inv_rot = Vec3::new(0.0, -angle, 0.0);
+        let local_origin = (ray.origin - self.center).rotate_y(inv_rot.y);
+        let local_dir = ray.direction.rotate_y(inv_rot.y);
+        let local_ray = Ray::new(local_origin + self.center, local_dir);
+
+        let half_size = self.size / 2.0;
+        let min = self.center - Vec3::new(half_size, half_size, half_size);
+        let max = self.center + Vec3::new(half_size, half_size, half_size);
+
+        // Ray-AABB intersection
+        let t_min_x = (min.x - local_ray.origin.x) / local_ray.direction.x;
+        let t_max_x = (max.x - local_ray.origin.x) / local_ray.direction.x;
+        let (t_min_x, t_max_x) = if t_min_x > t_max_x { (t_max_x, t_min_x) } else { (t_min_x, t_max_x) };
+        
+        let t_min_y = (min.y - local_ray.origin.y) / local_ray.direction.y;
+        let t_max_y = (max.y - local_ray.origin.y) / local_ray.direction.y;
+        let (t_min_y, t_max_y) = if t_min_y > t_max_y { (t_max_y, t_min_y) } else { (t_min_y, t_max_y) };
+        
+        let t_min_z = (min.z - local_ray.origin.z) / local_ray.direction.z;
+        let t_max_z = (max.z - local_ray.origin.z) / local_ray.direction.z;
+        let (t_min_z, t_max_z) = if t_min_z > t_max_z { (t_max_z, t_min_z) } else { (t_min_z, t_max_z) };
+        
+        let t_min = t_min_x.max(t_min_y).max(t_min_z);
+        let t_max = t_max_x.min(t_max_y).min(t_max_z);
+        
+        if t_max < 0.0 || t_min > t_max { return None; }
+        let t = if t_min > 0.001 { t_min } else if t_max > 0.001 { t_max } else { return None; };
+        
+        let local_point = local_ray.point_at(t);
+        // Determine normal in local space
+        let mut normal;
+        let eps = 0.0001;
+        if (local_point.x - min.x).abs() < eps { normal = Vec3::new(-1.0, 0.0, 0.0); }
+        else if (local_point.x - max.x).abs() < eps { normal = Vec3::new(1.0, 0.0, 0.0); }
+        else if (local_point.y - min.y).abs() < eps { normal = Vec3::new(0.0, -1.0, 0.0); }
+        else if (local_point.y - max.y).abs() < eps { normal = Vec3::new(0.0, 1.0, 0.0); }
+        else if (local_point.z - min.z).abs() < eps { normal = Vec3::new(0.0, 0.0, -1.0); }
+        else { normal = Vec3::new(0.0, 0.0, 1.0); }
+
+        // Transform normal back to world by current rotation
+        normal = normal.rotate_y(angle);
+
+        // Transform point back
+        let local_offset = local_point - self.center;
+        let world_offset = local_offset.rotate_y(angle);
+        let world_point = self.center + world_offset;
+
+        // UV mapping as in Cube
+        let local_point_centered = local_point - self.center;
+        let (u, v) = if normal.x.abs() > 0.5 {
+            ((local_point_centered.z + half_size) / self.size, (local_point_centered.y + half_size) / self.size)
+        } else if normal.y.abs() > 0.5 {
+            ((local_point_centered.x + half_size) / self.size, (local_point_centered.z + half_size) / self.size)
+        } else {
+            ((local_point_centered.x + half_size) / self.size, (local_point_centered.y + half_size) / self.size)
+        };
+
+        Some(HitInfo { t, point: world_point, normal, material: self.material.clone(), uv: (u, v) })
+    }
+
+    fn get_bounds(&self) -> (Vec3, Vec3) {
+        let half_size = self.size / 2.0;
+        let extent = Vec3::new(half_size, half_size, half_size) * 1.73; // conservative bounds
+        (self.center - extent, self.center + extent)
+    }
+}
+
 pub struct Triangle {
     pub v0: Vec3,
     pub v1: Vec3,
