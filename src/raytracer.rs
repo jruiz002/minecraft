@@ -571,6 +571,7 @@ pub enum ShadowMode { None, SunOnly, Full }
 pub struct RenderOptions {
     pub shadow_mode: ShadowMode,
     pub max_depth: i32,
+    pub far_simplify_distance: f32,
 }
 
 pub fn trace_ray(ray: &Ray, scene: &Scene, depth: i32, time: f32, rotation_y: f32, opts: &RenderOptions) -> Vec3 {
@@ -633,8 +634,9 @@ fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rot
     let mut color = Vec3::zero();
     
     // Sample material texture
-    // Lower texture quality under heavy recursion to save cost
-    let tex_quality = if depth >= 3 { TextureQuality::Low } else if depth >= 1 { TextureQuality::Medium } else { TextureQuality::High };
+    // Lower texture quality under heavy recursion or distance to save cost
+    let far = hit.t > opts.far_simplify_distance;
+    let tex_quality = if far { TextureQuality::Low } else if depth >= 3 { TextureQuality::Low } else if depth >= 1 { TextureQuality::Medium } else { TextureQuality::High };
     let albedo = hit.material.sample_texture_quality(hit.uv, time, tex_quality);
     
     // Emissive materials
@@ -645,23 +647,35 @@ fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rot
     // Ambient lighting
     color = color + scene.ambient_light * albedo;
     
-    // Direct lighting from all light sources (respect shadow mode)
-    for light in &scene.lights {
-        match (&opts.shadow_mode, &light.light_type) {
-            (ShadowMode::None, _) => {},
-            (ShadowMode::SunOnly, LightType::Point) => {},
-            _ => { color = color + calculate_direct_lighting(ray, hit, light, albedo, scene, time, opts); }
+    // Direct lighting (respect shadow mode) with distance-based simplification
+    if far {
+        // For far surfaces, only add an unshadowed directional light to reduce cost
+        for light in &scene.lights {
+            if let LightType::Directional(_) = light.light_type {
+                let light_dir = light.get_light_direction(hit.point);
+                let n_dot_l = hit.normal.dot(light_dir).max(0.0);
+                let intensity = light.intensity;
+                color = color + albedo * light.color * intensity * n_dot_l / std::f32::consts::PI;
+            }
+        }
+    } else {
+        for light in &scene.lights {
+            match (&opts.shadow_mode, &light.light_type) {
+                (ShadowMode::None, _) => {},
+                (ShadowMode::SunOnly, LightType::Point) => {},
+                _ => { color = color + calculate_direct_lighting(ray, hit, light, albedo, scene, time, opts); }
+            }
         }
     }
     
     // Reflection
-    if hit.material.is_reflective() && depth < opts.max_depth {
+    if !far && hit.material.is_reflective() && depth < opts.max_depth {
         let reflect_contribution = calculate_reflection(ray, hit, scene, depth, time, rotation_y, opts);
         color = color + reflect_contribution * hit.material.reflectivity;
     }
     
     // Refraction/Transmission
-    if hit.material.is_transparent() && depth < opts.max_depth {
+    if !far && hit.material.is_transparent() && depth < opts.max_depth {
         let refract_contribution = calculate_refraction(ray, hit, scene, depth, time, rotation_y, opts);
         color = color.lerp(refract_contribution, hit.material.transparency);
     }

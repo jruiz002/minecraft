@@ -24,6 +24,8 @@ struct RenderState {
     scale_factor: usize, // 1 = full res, 2 = half res, etc.
     shadow_mode: raytracer::ShadowMode,
     max_depth: i32,
+    ultra_mode: bool,
+    checker_phase: bool,
 }
 
 fn main() {
@@ -56,7 +58,9 @@ fn main() {
     // Build BVH once after scene creation for faster ray intersections
     build_scene_bvh(&mut scene);
     let mut frame_buffer = vec![0u32; WIDTH * HEIGHT];
+    let mut prev_full_buffer = vec![0u32; WIDTH * HEIGHT];
     let mut lowres_buffer: Vec<u32> = Vec::new();
+    let mut prev_lowres_buffer: Vec<u32> = Vec::new();
     let mut time = 0.0f32;
     let mut fps_counter = 0;
     let mut fps_timer = Instant::now();
@@ -70,13 +74,14 @@ fn main() {
     println!("R: Rotate scene");
     println!("T: Toggle manual day/night control (hold J/K to scrub, H to toggle)");
     println!("1-4: Resolution scale, Y/U/I: Shadows None/SunOnly/Full, F/G: Max depth +/-");
+    println!("Z: Ultra mode (checkerboard + temporal reuse)");
     println!("Mouse: Look around (drag)");
     println!("Scroll: Zoom in/out");
     println!("ESC: Exit");
     println!("====================================");
 
     // Faster defaults for smoother movement (adjust at runtime with keys above)
-    let mut render_state = RenderState { scale_factor: 3, shadow_mode: raytracer::ShadowMode::None, max_depth: 2 };
+    let mut render_state = RenderState { scale_factor: 3, shadow_mode: raytracer::ShadowMode::None, max_depth: 2, ultra_mode: true, checker_phase: false };
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let start_time = Instant::now();
@@ -111,10 +116,33 @@ fn main() {
         if window.is_key_pressed(Key::Y, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::None; println!("Shadows: None"); }
         if window.is_key_pressed(Key::U, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::SunOnly; println!("Shadows: SunOnly"); }
         if window.is_key_pressed(Key::I, minifb::KeyRepeat::No) { render_state.shadow_mode = raytracer::ShadowMode::Full; println!("Shadows: Full"); }
+        if window.is_key_pressed(Key::Z, minifb::KeyRepeat::No) { render_state.ultra_mode = !render_state.ultra_mode; println!("Ultra mode: {}", if render_state.ultra_mode { "ON" } else { "OFF" }); }
         
-        let opts = raytracer::RenderOptions { shadow_mode: render_state.shadow_mode, max_depth: render_state.max_depth };
+        let opts = raytracer::RenderOptions { shadow_mode: render_state.shadow_mode, max_depth: render_state.max_depth, far_simplify_distance: 20.0 };
         
-        render_parallel_scaled(&scene, &camera, &mut frame_buffer, &mut lowres_buffer, time, rotation_y, render_state.scale_factor, opts);
+        if render_state.ultra_mode {
+            render_checkerboard_scaled(
+                &scene,
+                &camera,
+                &mut frame_buffer,
+                &mut prev_full_buffer,
+                &mut lowres_buffer,
+                &mut prev_lowres_buffer,
+                time,
+                rotation_y,
+                render_state.scale_factor,
+                opts,
+                render_state.checker_phase,
+            );
+            render_state.checker_phase = !render_state.checker_phase;
+        } else {
+            render_parallel_scaled(&scene, &camera, &mut frame_buffer, &mut lowres_buffer, time, rotation_y, render_state.scale_factor, opts);
+            if render_state.scale_factor <= 1 {
+                prev_full_buffer.copy_from_slice(&frame_buffer);
+            } else {
+                prev_lowres_buffer = lowres_buffer.clone();
+            }
+        }
         let render_time = render_start.elapsed();
         
         window.update_with_buffer(&frame_buffer, WIDTH, HEIGHT).unwrap();
@@ -289,6 +317,71 @@ fn render_parallel_scaled(scene: &Scene, camera: &Camera, full_buffer: &mut [u32
         }
     }
 }
+
+fn render_checkerboard_scaled(
+    scene: &Scene,
+    camera: &Camera,
+    full_buffer: &mut [u32],
+    prev_full_buffer: &mut [u32],
+    lowres_buffer: &mut Vec<u32>,
+    prev_lowres_buffer: &mut Vec<u32>,
+    time: f32,
+    rotation_y: f32,
+    scale_factor: usize,
+    opts: raytracer::RenderOptions,
+    phase: bool,
+) {
+    if scale_factor <= 1 {
+        // Full-res checkerboard: render every other pixel, reuse previous frame for the rest
+        let frame = camera.build_frame(WIDTH, HEIGHT);
+        full_buffer.par_chunks_mut(WIDTH).enumerate().for_each(|(y, row)| {
+            for x in 0..WIDTH {
+                let pattern = ((x + y) & 1) == 0;
+                if pattern == phase {
+                    let ray = frame.get_ray(x as f32, y as f32);
+                    let color = trace_ray(&ray, scene, 0, time, rotation_y, &opts);
+                    row[x] = color_to_u32(color);
+                } else {
+                    row[x] = prev_full_buffer[y * WIDTH + x];
+                }
+            }
+        });
+        prev_full_buffer.copy_from_slice(&full_buffer);
+        return;
+    }
+    // Low-res checkerboard
+    let lw = WIDTH / scale_factor;
+    let lh = HEIGHT / scale_factor;
+    if lowres_buffer.len() != lw * lh { lowres_buffer.resize(lw * lh, 0); }
+    if prev_lowres_buffer.len() != lw * lh { prev_lowres_buffer.resize(lw * lh, 0); }
+    let frame = camera.build_frame(lw, lh);
+    lowres_buffer.par_chunks_mut(lw).enumerate().for_each(|(y, row)| {
+        for x in 0..lw {
+            let pattern = ((x + y) & 1) == 0;
+            if pattern == phase {
+                let ray = frame.get_ray(x as f32, y as f32);
+                let color = trace_ray(&ray, scene, 0, time, rotation_y, &opts);
+                row[x] = color_to_u32(color);
+            } else {
+                row[x] = prev_lowres_buffer[y * lw + x];
+            }
+        }
+    });
+    // Upscale to full buffer
+    for y in 0..HEIGHT {
+        let mut src_y = y / scale_factor;
+        if src_y >= lh { src_y = lh - 1; }
+        let dest_row = &mut full_buffer[y * WIDTH..(y + 1) * WIDTH];
+        for x in 0..WIDTH {
+            let mut src_x = x / scale_factor;
+            if src_x >= lw { src_x = lw - 1; }
+            dest_row[x] = lowres_buffer[src_y * lw + src_x];
+        }
+    }
+    *prev_lowres_buffer = lowres_buffer.clone();
+}
+
+// (Removed duplicate alternate version)
 
 fn create_minecraft_scene() -> Scene {
     let mut scene = Scene::new();
