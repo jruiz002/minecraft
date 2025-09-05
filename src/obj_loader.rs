@@ -6,6 +6,8 @@ use std::io::{BufRead, BufReader};
 
 pub struct ObjModel {
     pub triangles: Vec<Box<dyn Primitive>>,
+    pub bounds_min: Vec3,
+    pub bounds_max: Vec3,
 }
 
 impl ObjModel {
@@ -14,140 +16,314 @@ impl ObjModel {
         let reader = BufReader::new(file);
         
         let mut vertices: Vec<Vec3> = Vec::new();
+        let mut normals: Vec<Vec3> = Vec::new();
+        let mut uvs: Vec<(f32, f32)> = Vec::new();
         let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
+        
+        let mut bounds_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut bounds_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
         
         for line in reader.lines() {
             let line = line?;
             let parts: Vec<&str> = line.split_whitespace().collect();
             
-            if parts.is_empty() {
+            if parts.is_empty() || parts[0].starts_with('#') {
                 continue;
             }
             
             match parts[0] {
                 "v" => {
-                    // Vertex
+                    // Vertex position
                     if parts.len() >= 4 {
                         let x: f32 = parts[1].parse()?;
                         let y: f32 = parts[2].parse()?;
                         let z: f32 = parts[3].parse()?;
-                        vertices.push(Vec3::new(x, y, z));
+                        let vertex = Vec3::new(x, y, z);
+                        
+                        // Update bounds
+                        bounds_min = bounds_min.min(vertex);
+                        bounds_max = bounds_max.max(vertex);
+                        
+                        vertices.push(vertex);
+                    }
+                },
+                "vn" => {
+                    // Vertex normal
+                    if parts.len() >= 4 {
+                        let x: f32 = parts[1].parse()?;
+                        let y: f32 = parts[2].parse()?;
+                        let z: f32 = parts[3].parse()?;
+                        normals.push(Vec3::new(x, y, z).normalize());
+                    }
+                },
+                "vt" => {
+                    // Texture coordinate
+                    if parts.len() >= 3 {
+                        let u: f32 = parts[1].parse()?;
+                        let v: f32 = parts[2].parse()?;
+                        uvs.push((u, v));
                     }
                 },
                 "f" => {
                     // Face
                     if parts.len() >= 4 {
-                        // Parse face indices (OBJ indices are 1-based)
-                        let mut face_vertices = Vec::new();
+                        let mut face_data = Vec::new();
+                        
                         for i in 1..parts.len() {
                             let vertex_data = parts[i];
-                            // Handle vertex/texture/normal format (v/vt/vn or just v)
-                            let vertex_index: usize = vertex_data
-                                .split('/')
-                                .next()
-                                .unwrap()
-                                .parse::<usize>()?
-                                .saturating_sub(1); // Convert to 0-based
+                            let indices: Vec<&str> = vertex_data.split('/').collect();
+                            
+                            // Parse vertex index (required)
+                            let vertex_index: usize = indices[0].parse::<usize>()?.saturating_sub(1);
+                            
+                            // Parse texture coordinate index (optional)
+                            let uv_index = if indices.len() > 1 && !indices[1].is_empty() {
+                                Some(indices[1].parse::<usize>()?.saturating_sub(1))
+                            } else {
+                                None
+                            };
+                            
+                            // Parse normal index (optional)
+                            let normal_index = if indices.len() > 2 && !indices[2].is_empty() {
+                                Some(indices[2].parse::<usize>()?.saturating_sub(1))
+                            } else {
+                                None
+                            };
                             
                             if vertex_index < vertices.len() {
-                                face_vertices.push(vertices[vertex_index]);
+                                let vertex = vertices[vertex_index];
+                                let uv = uv_index.and_then(|i| uvs.get(i)).copied().unwrap_or((0.0, 0.0));
+                                let normal = normal_index.and_then(|i| normals.get(i)).copied();
+                                
+                                face_data.push((vertex, uv, normal));
                             }
                         }
                         
-                        // Triangulate the face (simple fan triangulation)
-                        if face_vertices.len() >= 3 {
-                            for i in 1..face_vertices.len() - 1 {
-                                let triangle = Triangle::new(
-                                    face_vertices[0],
-                                    face_vertices[i],
-                                    face_vertices[i + 1],
-                                    material.clone(),
-                                );
+                        // Triangulate the face (fan triangulation for n-gons)
+                        if face_data.len() >= 3 {
+                            for i in 1..face_data.len() - 1 {
+                                let (v0, uv0, n0) = face_data[0];
+                                let (v1, uv1, n1) = face_data[i];
+                                let (v2, uv2, n2) = face_data[i + 1];
+                                
+                                // Calculate face normal if not provided
+                                let _face_normal = if let (Some(n0), Some(n1), Some(n2)) = (n0, n1, n2) {
+                                    // Use average of vertex normals for smooth shading
+                                    ((n0 + n1 + n2) / 3.0).normalize()
+                                } else {
+                                    // Calculate geometric normal
+                                    (v1 - v0).cross(v2 - v0).normalize()
+                                };
+                                
+                                let triangle = Triangle::new_with_uvs(v0, v1, v2, uv0, uv1, uv2, material.clone());
                                 triangles.push(Box::new(triangle));
                             }
                         }
                     }
                 },
-                _ => {} // Ignore other lines
+                _ => {} // Ignore other OBJ commands
             }
         }
         
-        Ok(ObjModel { triangles })
+        Ok(ObjModel {
+            triangles,
+            bounds_min,
+            bounds_max,
+        })
     }
     
-    pub fn create_cube_obj(center: Vec3, size: f32, material: Material) -> Self {
-        let half = size / 2.0;
-        
-        // Define cube vertices
-        let vertices = vec![
-            center + Vec3::new(-half, -half, -half), // 0
-            center + Vec3::new( half, -half, -half), // 1
-            center + Vec3::new( half,  half, -half), // 2
-            center + Vec3::new(-half,  half, -half), // 3
-            center + Vec3::new(-half, -half,  half), // 4
-            center + Vec3::new( half, -half,  half), // 5
-            center + Vec3::new( half,  half,  half), // 6
-            center + Vec3::new(-half,  half,  half), // 7
-        ];
-        
+    pub fn create_minecraft_tree(center: Vec3, size: f32, _material: Material) -> Self {
         let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
+        let trunk_material = Material::minecraft_wood();
+        let leaves_material = Material::minecraft_grass(); // Using grass for leaves
         
-        // Define cube faces (12 triangles)
-        let faces = [
-            // Front face
-            [0, 1, 2], [0, 2, 3],
-            // Back face
-            [5, 4, 7], [5, 7, 6],
-            // Left face
-            [4, 0, 3], [4, 3, 7],
-            // Right face
-            [1, 5, 6], [1, 6, 2],
-            // Top face
-            [3, 2, 6], [3, 6, 7],
-            // Bottom face
-            [4, 5, 1], [4, 1, 0],
-        ];
+        let trunk_height = size * 0.6;
+        let trunk_radius = size * 0.1;
+        let crown_radius = size * 0.4;
+        let crown_height = size * 0.5;
         
-        for face in faces.iter() {
-            let triangle = Triangle::new(
-                vertices[face[0]],
-                vertices[face[1]],
-                vertices[face[2]],
-                material.clone(),
-            );
-            triangles.push(Box::new(triangle));
+        // Create trunk (cylinder approximation with triangles)
+        let trunk_segments = 8;
+        for i in 0..trunk_segments {
+            let angle1 = (i as f32) / (trunk_segments as f32) * 2.0 * std::f32::consts::PI;
+            let angle2 = ((i + 1) as f32) / (trunk_segments as f32) * 2.0 * std::f32::consts::PI;
+            
+            let x1 = center.x + angle1.cos() * trunk_radius;
+            let z1 = center.z + angle1.sin() * trunk_radius;
+            let x2 = center.x + angle2.cos() * trunk_radius;
+            let z2 = center.z + angle2.sin() * trunk_radius;
+            
+            // Trunk side faces
+            let v1 = Vec3::new(x1, center.y, z1);
+            let v2 = Vec3::new(x2, center.y, z2);
+            let v3 = Vec3::new(x2, center.y + trunk_height, z2);
+            let v4 = Vec3::new(x1, center.y + trunk_height, z1);
+            
+            triangles.push(Box::new(Triangle::new(v1, v2, v3, trunk_material.clone())));
+            triangles.push(Box::new(Triangle::new(v1, v3, v4, trunk_material.clone())));
         }
         
-        ObjModel { triangles }
+        // Create leaves (simplified icosphere)
+        let crown_center = center + Vec3::new(0.0, trunk_height + crown_height * 0.5, 0.0);
+        let leaves_triangles = Self::create_icosphere(crown_center, crown_radius, 2, leaves_material);
+        triangles.extend(leaves_triangles);
+        
+        // Calculate bounds
+        let bounds_min = center - Vec3::new(crown_radius, 0.0, crown_radius);
+        let bounds_max = center + Vec3::new(crown_radius, trunk_height + crown_height, crown_radius);
+        
+        ObjModel {
+            triangles,
+            bounds_min,
+            bounds_max,
+        }
     }
     
-    pub fn create_teapot_placeholder(center: Vec3, size: f32, material: Material) -> Self {
-        // Create a simple approximation of a teapot using spheres and cylinders
-        // represented as triangle meshes
+    pub fn create_minecraft_house(center: Vec3, size: f32) -> Self {
         let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
         
-        // Create a simple teapot-like shape using icospheres
-        let teapot_triangles = Self::create_icosphere(center, size * 0.7, 2, material.clone());
-        triangles.extend(teapot_triangles);
+        let wall_material = Material::minecraft_wood();
+        let roof_material = Material::minecraft_stone();
+        let window_material = Material::minecraft_glass();
         
-        // Add a handle (simplified)
-        let handle_center = center + Vec3::new(size * 0.8, 0.0, 0.0);
-        let handle_triangles = Self::create_torus(handle_center, size * 0.3, size * 0.1, 8, 16, material.clone());
-        triangles.extend(handle_triangles);
+        let half_size = size * 0.5;
+        let height = size * 0.8;
+        let roof_height = size * 0.4;
         
-        // Add a spout (simplified)
-        let spout_center = center + Vec3::new(-size * 0.8, 0.0, 0.0);
-        let spout_triangles = Self::create_cylinder(spout_center, size * 0.1, size * 0.5, 8, material);
-        triangles.extend(spout_triangles);
+        // House walls (4 walls as triangles)
+        let corners = [
+            Vec3::new(-half_size, 0.0, -half_size),
+            Vec3::new(half_size, 0.0, -half_size),
+            Vec3::new(half_size, 0.0, half_size),
+            Vec3::new(-half_size, 0.0, half_size),
+        ];
         
-        ObjModel { triangles }
+        for i in 0..4 {
+            let next = (i + 1) % 4;
+            let bottom1 = center + corners[i];
+            let bottom2 = center + corners[next];
+            let top1 = bottom1 + Vec3::new(0.0, height, 0.0);
+            let top2 = bottom2 + Vec3::new(0.0, height, 0.0);
+            
+            // Wall triangles
+            triangles.push(Box::new(Triangle::new(bottom1, bottom2, top2, wall_material.clone())));
+            triangles.push(Box::new(Triangle::new(bottom1, top2, top1, wall_material.clone())));
+            
+            // Add windows to front and back walls
+            if i == 0 || i == 2 {
+                let window_size = size * 0.2;
+                let window_center = (bottom1 + bottom2) * 0.5 + Vec3::new(0.0, height * 0.6, 0.0);
+                let window_half = Vec3::new(window_size * 0.5, window_size * 0.5, 0.0);
+                
+                // Simple window (just a quad)
+                let w1 = window_center - window_half;
+                let w2 = window_center + Vec3::new(window_half.x, -window_half.y, 0.0);
+                let w3 = window_center + window_half;
+                let w4 = window_center + Vec3::new(-window_half.x, window_half.y, 0.0);
+                
+                triangles.push(Box::new(Triangle::new(w1, w2, w3, window_material.clone())));
+                triangles.push(Box::new(Triangle::new(w1, w3, w4, window_material.clone())));
+            }
+        }
+        
+        // Roof (simple triangular roof)
+        let roof_peak = center + Vec3::new(0.0, height + roof_height, 0.0);
+        let roof_base_1 = center + Vec3::new(-half_size, height, -half_size);
+        let roof_base_2 = center + Vec3::new(half_size, height, -half_size);
+        let roof_base_3 = center + Vec3::new(half_size, height, half_size);
+        let roof_base_4 = center + Vec3::new(-half_size, height, half_size);
+        
+        // Roof triangles
+        triangles.push(Box::new(Triangle::new(roof_peak, roof_base_1, roof_base_2, roof_material.clone())));
+        triangles.push(Box::new(Triangle::new(roof_peak, roof_base_2, roof_base_3, roof_material.clone())));
+        triangles.push(Box::new(Triangle::new(roof_peak, roof_base_3, roof_base_4, roof_material.clone())));
+        triangles.push(Box::new(Triangle::new(roof_peak, roof_base_4, roof_base_1, roof_material.clone())));
+        
+        // Floor
+        triangles.push(Box::new(Triangle::new(roof_base_1, roof_base_3, roof_base_2, wall_material.clone())));
+        triangles.push(Box::new(Triangle::new(roof_base_1, roof_base_4, roof_base_3, wall_material)));
+        
+        let bounds_min = center - Vec3::new(half_size, 0.0, half_size);
+        let bounds_max = center + Vec3::new(half_size, height + roof_height, half_size);
+        
+        ObjModel {
+            triangles,
+            bounds_min,
+            bounds_max,
+        }
+    }
+    
+    pub fn create_minecraft_windmill(center: Vec3, size: f32) -> Self {
+        let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
+        
+        let stone_material = Material::minecraft_stone();
+        let wood_material = Material::minecraft_wood();
+        
+        // Tower (cylinder)
+        let tower_height = size * 1.5;
+        let tower_radius = size * 0.3;
+        let tower_segments = 12;
+        
+        for i in 0..tower_segments {
+            let angle1 = (i as f32) / (tower_segments as f32) * 2.0 * std::f32::consts::PI;
+            let angle2 = ((i + 1) as f32) / (tower_segments as f32) * 2.0 * std::f32::consts::PI;
+            
+            let x1 = center.x + angle1.cos() * tower_radius;
+            let z1 = center.z + angle1.sin() * tower_radius;
+            let x2 = center.x + angle2.cos() * tower_radius;
+            let z2 = center.z + angle2.sin() * tower_radius;
+            
+            let bottom1 = Vec3::new(x1, center.y, z1);
+            let bottom2 = Vec3::new(x2, center.y, z2);
+            let top1 = Vec3::new(x1, center.y + tower_height, z1);
+            let top2 = Vec3::new(x2, center.y + tower_height, z2);
+            
+            triangles.push(Box::new(Triangle::new(bottom1, bottom2, top2, stone_material.clone())));
+            triangles.push(Box::new(Triangle::new(bottom1, top2, top1, stone_material.clone())));
+        }
+        
+        // Windmill blades
+        let blade_center = center + Vec3::new(0.0, tower_height * 0.8, tower_radius);
+        let blade_length = size * 0.8;
+        let blade_width = size * 0.1;
+        
+        for i in 0..4 {
+            let angle = (i as f32) * std::f32::consts::PI * 0.5;
+            let blade_end = blade_center + Vec3::new(
+                angle.cos() * blade_length,
+                angle.sin() * blade_length,
+                0.0,
+            );
+            
+            let blade_side1 = blade_center + Vec3::new(
+                -angle.sin() * blade_width,
+                angle.cos() * blade_width,
+                0.0,
+            );
+            let blade_side2 = blade_center + Vec3::new(
+                angle.sin() * blade_width,
+                -angle.cos() * blade_width,
+                0.0,
+            );
+            
+            triangles.push(Box::new(Triangle::new(blade_center, blade_end, blade_side1, wood_material.clone())));
+            triangles.push(Box::new(Triangle::new(blade_center, blade_side2, blade_end, wood_material.clone())));
+        }
+        
+        let bounds_min = center - Vec3::new(blade_length, 0.0, blade_length);
+        let bounds_max = center + Vec3::new(blade_length, tower_height, blade_length);
+        
+        ObjModel {
+            triangles,
+            bounds_min,
+            bounds_max,
+        }
     }
     
     fn create_icosphere(center: Vec3, radius: f32, _subdivisions: u32, material: Material) -> Vec<Box<dyn Primitive>> {
-        // Simple icosphere implementation
         let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
         
-        // Start with an icosahedron
+        // Start with icosahedron vertices
         let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
         let vertices = vec![
             Vec3::new(-1.0, t, 0.0).normalize() * radius + center,
@@ -164,7 +340,7 @@ impl ObjModel {
             Vec3::new(-t, 0.0, 1.0).normalize() * radius + center,
         ];
         
-        // Define icosahedron faces
+        // Icosahedron faces
         let faces = [
             [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
             [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
@@ -173,78 +349,13 @@ impl ObjModel {
         ];
         
         for face in faces.iter() {
-            let triangle = Triangle::new(
-                vertices[face[0]],
-                vertices[face[1]],
-                vertices[face[2]],
-                material.clone(),
-            );
-            triangles.push(Box::new(triangle));
+            let v0 = vertices[face[0]];
+            let v1 = vertices[face[1]];
+            let v2 = vertices[face[2]];
+            
+            triangles.push(Box::new(Triangle::new(v0, v1, v2, material.clone())));
         }
         
         triangles
     }
-    
-    fn create_torus(center: Vec3, major_radius: f32, minor_radius: f32, major_segments: u32, minor_segments: u32, material: Material) -> Vec<Box<dyn Primitive>> {
-        let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
-        
-        for i in 0..major_segments {
-            for j in 0..minor_segments {
-                let u1 = (i as f32) / (major_segments as f32) * 2.0 * std::f32::consts::PI;
-                let u2 = ((i + 1) as f32) / (major_segments as f32) * 2.0 * std::f32::consts::PI;
-                let v1 = (j as f32) / (minor_segments as f32) * 2.0 * std::f32::consts::PI;
-                let v2 = ((j + 1) as f32) / (minor_segments as f32) * 2.0 * std::f32::consts::PI;
-                
-                let p1 = torus_point(center, major_radius, minor_radius, u1, v1);
-                let p2 = torus_point(center, major_radius, minor_radius, u2, v1);
-                let p3 = torus_point(center, major_radius, minor_radius, u2, v2);
-                let p4 = torus_point(center, major_radius, minor_radius, u1, v2);
-                
-                triangles.push(Box::new(Triangle::new(p1, p2, p3, material.clone())));
-                triangles.push(Box::new(Triangle::new(p1, p3, p4, material.clone())));
-            }
-        }
-        
-        triangles
-    }
-    
-    fn create_cylinder(center: Vec3, radius: f32, height: f32, segments: u32, material: Material) -> Vec<Box<dyn Primitive>> {
-        let mut triangles: Vec<Box<dyn Primitive>> = Vec::new();
-        let half_height = height / 2.0;
-        
-        for i in 0..segments {
-            let angle1 = (i as f32) / (segments as f32) * 2.0 * std::f32::consts::PI;
-            let angle2 = ((i + 1) as f32) / (segments as f32) * 2.0 * std::f32::consts::PI;
-            
-            let x1 = angle1.cos() * radius;
-            let z1 = angle1.sin() * radius;
-            let x2 = angle2.cos() * radius;
-            let z2 = angle2.sin() * radius;
-            
-            // Side faces
-            let p1 = center + Vec3::new(x1, -half_height, z1);
-            let p2 = center + Vec3::new(x2, -half_height, z2);
-            let p3 = center + Vec3::new(x2, half_height, z2);
-            let p4 = center + Vec3::new(x1, half_height, z1);
-            
-            triangles.push(Box::new(Triangle::new(p1, p2, p3, material.clone())));
-            triangles.push(Box::new(Triangle::new(p1, p3, p4, material.clone())));
-            
-            // Top and bottom caps
-            let top_center = center + Vec3::new(0.0, half_height, 0.0);
-            let bottom_center = center + Vec3::new(0.0, -half_height, 0.0);
-            
-            triangles.push(Box::new(Triangle::new(top_center, p4, p3, material.clone())));
-            triangles.push(Box::new(Triangle::new(bottom_center, p1, p2, material.clone())));
-        }
-        
-        triangles
-    }
-}
-
-fn torus_point(center: Vec3, major_radius: f32, minor_radius: f32, u: f32, v: f32) -> Vec3 {
-    let x = (major_radius + minor_radius * v.cos()) * u.cos();
-    let y = minor_radius * v.sin();
-    let z = (major_radius + minor_radius * v.cos()) * u.sin();
-    center + Vec3::new(x, y, z)
 }
