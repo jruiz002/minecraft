@@ -68,13 +68,15 @@ fn main() {
     println!("WASD/Arrow Keys: Move camera");
     println!("QE/PageUp/PageDown: Move up/down");
     println!("R: Rotate scene");
-    println!("T: Toggle manual day/night control");
+    println!("T: Toggle manual day/night control (hold J/K to scrub, H to toggle)");
+    println!("1-4: Resolution scale, Y/U/I: Shadows None/SunOnly/Full, F/G: Max depth +/-");
     println!("Mouse: Look around (drag)");
     println!("Scroll: Zoom in/out");
     println!("ESC: Exit");
     println!("====================================");
 
-    let mut render_state = RenderState { scale_factor: 2, shadow_mode: raytracer::ShadowMode::SunOnly, max_depth: 3 };
+    // Faster defaults for smoother movement (adjust at runtime with keys above)
+    let mut render_state = RenderState { scale_factor: 3, shadow_mode: raytracer::ShadowMode::None, max_depth: 2 };
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let start_time = Instant::now();
@@ -85,6 +87,16 @@ fn main() {
         
         if !manual_time_control {
             time += 0.016;
+        } else {
+            // Manual time scrubbing
+            if window.is_key_down(Key::J) { time -= 0.05; }
+            if window.is_key_down(Key::K) { time += 0.05; }
+            if window.is_key_pressed(Key::H, minifb::KeyRepeat::No) {
+                // Jump half cycle to toggle day/night
+                let half_cycle = std::f32::consts::PI / 0.05;
+                time += half_cycle;
+                println!("Toggled day/night");
+            }
         }
         update_minecraft_scene(&mut scene, time);
         
@@ -267,10 +279,12 @@ fn render_parallel_scaled(scene: &Scene, camera: &Camera, full_buffer: &mut [u32
     });
     // Upscale nearest-neighbor
     for y in 0..HEIGHT {
-        let src_y = y / scale_factor;
+        let mut src_y = y / scale_factor;
+        if src_y >= lh { src_y = lh - 1; }
         let dest_row = &mut full_buffer[y * WIDTH..(y + 1) * WIDTH];
         for x in 0..WIDTH {
-            let src_x = x / scale_factor;
+            let mut src_x = x / scale_factor;
+            if src_x >= lw { src_x = lw - 1; }
             dest_row[x] = lowres_buffer[src_y * lw + src_x];
         }
     }

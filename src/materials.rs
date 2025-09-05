@@ -178,6 +178,14 @@ impl Material {
         }
     }
     
+    pub fn sample_texture_quality(&self, uv: (f32, f32), time: f32, quality: crate::texture::TextureQuality) -> Vec3 {
+        if let Some(ref texture) = self.texture {
+            texture.sample_quality(uv.0, uv.1, time, quality)
+        } else {
+            self.albedo
+        }
+    }
+    
     // Physical properties for realistic rendering
     pub fn get_fresnel_reflectance(&self, cos_theta: f32) -> f32 {
         if self.metallic > 0.5 {

@@ -1,5 +1,6 @@
 use crate::math::*;
 use crate::materials::*;
+use crate::texture::TextureQuality;
 use crate::primitives::*;
 use rand::Rng;
 
@@ -632,7 +633,9 @@ fn shade_hit(ray: &Ray, hit: &HitInfo, scene: &Scene, depth: i32, time: f32, rot
     let mut color = Vec3::zero();
     
     // Sample material texture
-    let albedo = hit.material.sample_texture(hit.uv, time);
+    // Lower texture quality under heavy recursion to save cost
+    let tex_quality = if depth >= 3 { TextureQuality::Low } else if depth >= 1 { TextureQuality::Medium } else { TextureQuality::High };
+    let albedo = hit.material.sample_texture_quality(hit.uv, time, tex_quality);
     
     // Emissive materials
     if hit.material.is_emissive() {

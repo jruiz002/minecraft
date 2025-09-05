@@ -19,6 +19,9 @@ pub enum TextureType {
     Procedural(fn(f32, f32, f32) -> Vec3),
 }
 
+#[derive(Clone, Copy)]
+pub enum TextureQuality { High, Medium, Low }
+
 #[derive(Clone)]
 pub struct NoiseConfig {
     pub octaves: i32,
@@ -202,6 +205,10 @@ impl Texture {
     }
     
     pub fn sample(&self, u: f32, v: f32, time: f32) -> Vec3 {
+        self.sample_quality(u, v, time, TextureQuality::High)
+    }
+    
+    pub fn sample_quality(&self, u: f32, v: f32, time: f32, quality: TextureQuality) -> Vec3 {
         // Apply transformations
         let mut u_transformed = (u + self.offset.0) * self.scale;
         let mut v_transformed = (v + self.offset.1) * self.scale;
@@ -231,13 +238,26 @@ impl Texture {
             },
             
             TextureType::AnimatedWater => {
-                let wave1 = (u_transformed * 8.0 + time * 1.5).sin();
-                let wave2 = (v_transformed * 6.0 + time * 2.0).sin();
-                let wave3 = ((u_transformed + v_transformed) * 4.0 + time * 2.5).sin();
-                let wave4 = ((u_transformed - v_transformed) * 10.0 + time * 1.8).cos();
-                
-                let intensity = (wave1 + wave2 + wave3 + wave4) * 0.125 + 0.5;
-                let foam_factor = ((wave1 * wave2 + wave3 * wave4) * 0.3 + 0.7).clamp(0.0, 1.0);
+                let (intensity, foam_factor) = match quality {
+                    TextureQuality::High => {
+                        let wave1 = (u_transformed * 8.0 + time * 1.5).sin();
+                        let wave2 = (v_transformed * 6.0 + time * 2.0).sin();
+                        let wave3 = ((u_transformed + v_transformed) * 4.0 + time * 2.5).sin();
+                        let wave4 = ((u_transformed - v_transformed) * 10.0 + time * 1.8).cos();
+                        let intensity = (wave1 + wave2 + wave3 + wave4) * 0.125 + 0.5;
+                        let foam_factor = ((wave1 * wave2 + wave3 * wave4) * 0.3 + 0.7).clamp(0.0, 1.0);
+                        (intensity, foam_factor)
+                    },
+                    TextureQuality::Medium => {
+                        let wave1 = (u_transformed * 6.0 + time * 1.2).sin();
+                        let wave2 = (v_transformed * 5.0 + time * 1.6).sin();
+                        ((wave1 + wave2) * 0.25 + 0.5, (wave1 * wave2 * 0.3 + 0.7).clamp(0.0, 1.0))
+                    },
+                    TextureQuality::Low => {
+                        let wave = ((u_transformed + v_transformed) * 4.0 + time * 1.0).sin();
+                        (wave * 0.2 + 0.5, 0.7)
+                    }
+                };
                 
                 let deep_water = Vec3::new(0.05, 0.2, 0.6);
                 let shallow_water = Vec3::new(0.2, 0.5, 0.8);
@@ -248,11 +268,22 @@ impl Texture {
             },
             
             TextureType::AnimatedFire => {
-                let flame1 = (u_transformed * 3.0 + time * 8.0).sin() * 0.5 + 0.5;
-                let flame2 = (v_transformed * 4.0 - time * 12.0).sin() * 0.5 + 0.5;
-                let flame3 = ((u_transformed + v_transformed) * 6.0 + time * 10.0).cos() * 0.5 + 0.5;
-                
-                let intensity = (flame1 * flame2 * flame3).powf(0.5);
+                let intensity = match quality {
+                    TextureQuality::High => {
+                        let f1 = (u_transformed * 3.0 + time * 8.0).sin() * 0.5 + 0.5;
+                        let f2 = (v_transformed * 4.0 - time * 12.0).sin() * 0.5 + 0.5;
+                        let f3 = ((u_transformed + v_transformed) * 6.0 + time * 10.0).cos() * 0.5 + 0.5;
+                        (f1 * f2 * f3).powf(0.5)
+                    },
+                    TextureQuality::Medium => {
+                        let f1 = (u_transformed * 2.5 + time * 6.0).sin() * 0.5 + 0.5;
+                        let f2 = (v_transformed * 3.0 - time * 9.0).sin() * 0.5 + 0.5;
+                        (f1 * f2).powf(0.5)
+                    },
+                    TextureQuality::Low => {
+                        ((u_transformed * 3.0 + v_transformed * 3.0 + time * 6.0).sin() * 0.5 + 0.5).powf(0.5)
+                    },
+                };
                 let heat = (intensity * 2.0 - v_transformed).clamp(0.0, 1.0);
                 
                 let ember = Vec3::new(0.1, 0.05, 0.0);
@@ -270,12 +301,24 @@ impl Texture {
             },
             
             TextureType::NetherPortal => {
-                let portal1 = (u_transformed * 2.0 + time * 3.0).sin() * 0.5 + 0.5;
-                let portal2 = (v_transformed * 3.0 - time * 4.0).cos() * 0.5 + 0.5;
-                let portal3 = ((u_transformed + v_transformed) * 1.5 + time * 5.0).sin() * 0.5 + 0.5;
-                
-                let energy = (portal1 * portal2 + portal3) * 0.5;
-                let swirl = ((u_transformed - 0.5).atan2(v_transformed - 0.5) + time * 2.0).sin() * 0.5 + 0.5;
+                let (energy, swirl) = match quality {
+                    TextureQuality::High => {
+                        let p1 = (u_transformed * 2.0 + time * 3.0).sin() * 0.5 + 0.5;
+                        let p2 = (v_transformed * 3.0 - time * 4.0).cos() * 0.5 + 0.5;
+                        let p3 = ((u_transformed + v_transformed) * 1.5 + time * 5.0).sin() * 0.5 + 0.5;
+                        let energy = (p1 * p2 + p3) * 0.5;
+                        let swirl = ((u_transformed - 0.5).atan2(v_transformed - 0.5) + time * 2.0).sin() * 0.5 + 0.5;
+                        (energy, swirl)
+                    },
+                    TextureQuality::Medium => {
+                        let p1 = (u_transformed * 1.5 + time * 2.0).sin() * 0.5 + 0.5;
+                        let p2 = (v_transformed * 2.0 - time * 2.5).cos() * 0.5 + 0.5;
+                        ((p1 + p2) * 0.5, 0.5)
+                    },
+                    TextureQuality::Low => {
+                        (((u_transformed + v_transformed) * 1.2 + time * 1.5).sin() * 0.5 + 0.5, 0.5)
+                    },
+                };
                 
                 let purple = Vec3::new(0.4, 0.1, 0.8);
                 let magenta = Vec3::new(0.8, 0.2, 0.6);
@@ -286,13 +329,17 @@ impl Texture {
             },
             
             TextureType::MinecraftGrass => {
-                let noise_val = noise(Vec3::new(u_transformed * 16.0, v_transformed * 16.0, time * 0.1));
+                let noise_val = match quality {
+                    TextureQuality::High => noise(Vec3::new(u_transformed * 16.0, v_transformed * 16.0, time * 0.1)),
+                    TextureQuality::Medium => noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0)),
+                    TextureQuality::Low => 0.3,
+                };
                 let grass_base = Vec3::new(0.3, 0.6, 0.2);
                 let grass_bright = Vec3::new(0.5, 0.8, 0.3);
                 let dirt = Vec3::new(0.4, 0.25, 0.1);
                 
                 // Add some dirt patches
-                let dirt_noise = noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0));
+                let dirt_noise = if let TextureQuality::High = quality { noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0)) } else { 0.0 };
                 if dirt_noise > 0.7 {
                     dirt
                 } else {
@@ -301,9 +348,15 @@ impl Texture {
             },
             
             TextureType::MinecraftStone => {
-                let noise1 = noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0));
-                let noise2 = noise(Vec3::new(u_transformed * 16.0, v_transformed * 16.0, 0.0));
-                let combined = (noise1 + noise2 * 0.5) / 1.5;
+                let combined = match quality {
+                    TextureQuality::High => {
+                        let n1 = noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0));
+                        let n2 = noise(Vec3::new(u_transformed * 16.0, v_transformed * 16.0, 0.0));
+                        (n1 + n2 * 0.5) / 1.5
+                    },
+                    TextureQuality::Medium => noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0)),
+                    TextureQuality::Low => 0.4,
+                };
                 
                 let stone_dark = Vec3::new(0.4, 0.4, 0.4);
                 let stone_light = Vec3::new(0.7, 0.7, 0.7);
@@ -312,8 +365,12 @@ impl Texture {
             },
             
             TextureType::MinecraftWood => {
-                let ring_noise = ((v_transformed * 12.0).sin() * 0.3 + 0.7).clamp(0.0, 1.0);
-                let grain_noise = noise(Vec3::new(u_transformed * 32.0, v_transformed * 4.0, 0.0));
+                let ring_noise = match quality {
+                    TextureQuality::High => ((v_transformed * 12.0).sin() * 0.3 + 0.7).clamp(0.0, 1.0),
+                    TextureQuality::Medium => ((v_transformed * 8.0).sin() * 0.3 + 0.7).clamp(0.0, 1.0),
+                    TextureQuality::Low => 0.6,
+                };
+                let grain_noise = if let TextureQuality::Low = quality { 0.0 } else { noise(Vec3::new(u_transformed * 32.0, v_transformed * 4.0, 0.0)) };
                 
                 let wood_dark = Vec3::new(0.4, 0.2, 0.1);
                 let wood_light = Vec3::new(0.7, 0.4, 0.2);
@@ -323,9 +380,15 @@ impl Texture {
             },
             
             TextureType::MinecraftDiamond => {
-                let sparkle1 = ((u_transformed * 20.0 + time).sin() * (v_transformed * 20.0 + time).cos()).abs();
-                let sparkle2 = ((u_transformed * 15.0 - time * 0.7).cos() * (v_transformed * 15.0 - time * 0.7).sin()).abs();
-                let sparkles = (sparkle1 + sparkle2) * 0.5;
+                let sparkles = match quality {
+                    TextureQuality::High => {
+                        let s1 = ((u_transformed * 20.0 + time).sin() * (v_transformed * 20.0 + time).cos()).abs();
+                        let s2 = ((u_transformed * 15.0 - time * 0.7).cos() * (v_transformed * 15.0 - time * 0.7).sin()).abs();
+                        (s1 + s2) * 0.5
+                    },
+                    TextureQuality::Medium => ((u_transformed * 15.0 + v_transformed * 15.0 + time).sin().abs()) * 0.5 + 0.25,
+                    TextureQuality::Low => 0.2,
+                };
                 
                 let diamond_base = Vec3::new(0.6, 0.8, 1.0);
                 let diamond_bright = Vec3::new(0.9, 0.95, 1.0);
@@ -334,11 +397,16 @@ impl Texture {
             },
             
             TextureType::MinecraftGlowstone => {
-                let glow1 = (u_transformed * 8.0 + time * 2.0).sin() * 0.5 + 0.5;
-                let glow2 = (v_transformed * 8.0 + time * 1.5).cos() * 0.5 + 0.5;
-                let pulse = (time * 4.0).sin() * 0.1 + 0.9;
-                
-                let intensity = (glow1 * glow2 * pulse).clamp(0.0, 1.0);
+                let intensity = match quality {
+                    TextureQuality::High => {
+                        let g1 = (u_transformed * 8.0 + time * 2.0).sin() * 0.5 + 0.5;
+                        let g2 = (v_transformed * 8.0 + time * 1.5).cos() * 0.5 + 0.5;
+                        let pulse = (time * 4.0).sin() * 0.1 + 0.9;
+                        (g1 * g2 * pulse).clamp(0.0, 1.0)
+                    },
+                    TextureQuality::Medium => ((u_transformed * 6.0 + v_transformed * 6.0 + time * 2.0).sin() * 0.5 + 0.5).clamp(0.0, 1.0),
+                    TextureQuality::Low => 0.7,
+                };
                 
                 let glow_dim = Vec3::new(0.8, 0.6, 0.2);
                 let glow_bright = Vec3::new(1.0, 0.9, 0.5);
@@ -347,8 +415,8 @@ impl Texture {
             },
             
             TextureType::MinecraftObsidian => {
-                let noise_val = noise(Vec3::new(u_transformed * 12.0, v_transformed * 12.0, 0.0));
-                let reflection = ((u_transformed + v_transformed) * 16.0).sin() * 0.5 + 0.5;
+                let noise_val = if let TextureQuality::Low = quality { 0.2 } else { noise(Vec3::new(u_transformed * 12.0, v_transformed * 12.0, 0.0)) };
+                let reflection = if let TextureQuality::High = quality { ((u_transformed + v_transformed) * 16.0).sin() * 0.5 + 0.5 } else { 0.3 };
                 
                 let obsidian_base = Vec3::new(0.05, 0.02, 0.1);
                 let obsidian_highlight = Vec3::new(0.2, 0.1, 0.3);
@@ -358,8 +426,12 @@ impl Texture {
             },
             
             TextureType::MinecraftIron => {
-                let noise_val = fbm(Vec3::new(u_transformed * 10.0, v_transformed * 10.0, 0.0), 3, 0.5, 2.0);
-                let scratches = ((u_transformed * 40.0).sin() * 0.1 + 0.9).clamp(0.0, 1.0);
+                let noise_val = match quality {
+                    TextureQuality::High => fbm(Vec3::new(u_transformed * 10.0, v_transformed * 10.0, 0.0), 3, 0.5, 2.0),
+                    TextureQuality::Medium => fbm(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0), 2, 0.5, 2.0),
+                    TextureQuality::Low => 0.4,
+                };
+                let scratches = if let TextureQuality::Low = quality { 1.0 } else { ((u_transformed * 40.0).sin() * 0.1 + 0.9).clamp(0.0, 1.0) };
                 
                 let iron_dark = Vec3::new(0.4, 0.4, 0.45);
                 let iron_light = Vec3::new(0.7, 0.7, 0.75);
@@ -369,8 +441,8 @@ impl Texture {
             },
             
             TextureType::MinecraftGold => {
-                let noise_val = noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0));
-                let shine = ((u_transformed + v_transformed) * 12.0 + time).sin() * 0.5 + 0.5;
+                let noise_val = if let TextureQuality::Low = quality { 0.5 } else { noise(Vec3::new(u_transformed * 8.0, v_transformed * 8.0, 0.0)) };
+                let shine = if let TextureQuality::High = quality { ((u_transformed + v_transformed) * 12.0 + time).sin() * 0.5 + 0.5 } else { 0.5 };
                 
                 let gold_base = Vec3::new(0.8, 0.6, 0.2);
                 let gold_bright = Vec3::new(1.0, 0.9, 0.5);
@@ -380,12 +452,21 @@ impl Texture {
             },
             
             TextureType::Noise(config) => {
-                let noise_val = fbm(
-                    Vec3::new(u_transformed * config.scale, v_transformed * config.scale, time * 0.1),
-                    config.octaves,
-                    config.persistence,
-                    config.lacunarity,
-                );
+                let noise_val = match quality {
+                    TextureQuality::High => fbm(
+                        Vec3::new(u_transformed * config.scale, v_transformed * config.scale, time * 0.1),
+                        config.octaves,
+                        config.persistence,
+                        config.lacunarity,
+                    ),
+                    TextureQuality::Medium => fbm(
+                        Vec3::new(u_transformed * (config.scale * 0.8), v_transformed * (config.scale * 0.8), 0.0),
+                        (config.octaves - 1).max(1),
+                        config.persistence,
+                        config.lacunarity,
+                    ),
+                    TextureQuality::Low => noise(Vec3::new(u_transformed * (config.scale * 0.6), v_transformed * (config.scale * 0.6), 0.0)),
+                };
                 config.color1.lerp(config.color2, noise_val)
             },
             
