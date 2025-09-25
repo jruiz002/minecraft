@@ -1,10 +1,10 @@
-[Video demo (YouTube)](https://youtu.be/KkdcXJnNe3k?si=X5lfg3E2tIoirAOQ)
-
 # Minecraft Raytracing Diorama (Rust)
 
 ## Descripción
 
 Diorama interactivo estilo Minecraft renderizado por CPU en Rust (ray tracing puro) usando `minifb` para la ventana y `rayon` para paralelismo. La escena incluye terreno, casa, torre, estanque, portal, fogata, árbol procedural y mobiliario (banco) cargado desde OBJ; además de ciclo de día/noche con sol, materiales emisivos y texturas animadas.
+
+[Video demo (YouTube)](https://youtu.be/KkdcXJnNe3k?si=X5lfg3E2tIoirAOQ)
 
 ## Características (alineadas a la rúbrica)
 
